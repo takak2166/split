@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"flag"
 	"fmt"
@@ -72,15 +73,15 @@ const (
 type Splitter struct {
 	splitType    SplitType
 	count        uint64
-	inputFile    *os.File
+	reader       io.Reader
 	outputPrefix string
 }
 
-func NewSplitter(splitType SplitType, count uint64, inputFile *os.File, outputPrefix string) *Splitter {
+func NewSplitter(splitType SplitType, count uint64, reader io.Reader, outputPrefix string) *Splitter {
 	return &Splitter{
 		splitType:    splitType,
 		count:        count,
-		inputFile:    inputFile,
+		reader:       reader,
 		outputPrefix: outputPrefix,
 	}
 }
@@ -101,7 +102,7 @@ func (s *Splitter) Split() error {
 func (s *Splitter) splitByByte() error {
 	buffer := make([]byte, s.count)
 	for i := uint64(0); ; i++ {
-		n, err := s.inputFile.Read(buffer)
+		n, err := s.reader.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -133,7 +134,7 @@ func (s *Splitter) splitByLine() error {
 		return err
 	}
 
-	buffer := bufio.NewReader(s.inputFile)
+	buffer := bufio.NewReader(s.reader)
 	for i := 0; ; i++ {
 		line, err := buffer.ReadBytes('\n')
 		if err != nil {
@@ -165,19 +166,19 @@ func (s *Splitter) splitByLine() error {
 }
 
 func (s *Splitter) splitByFile() error {
-	fileStat, err := s.inputFile.Stat()
+	fileBuf := new(bytes.Buffer)
+	fileSize, err := io.Copy(fileBuf, s.reader)
 	if err != nil {
 		return err
 	}
-	fileSize := uint64(fileStat.Size())
-	byteCount := fileSize / s.count
-	byteRemain := fileSize % s.count
+	byteCount := uint64(fileSize) / s.count
+	byteRemain := uint64(fileSize) % s.count
 	buffer := make([]byte, byteCount)
 	for i := uint64(0); i < s.count; i++ {
 		if i == s.count-1 {
 			buffer = make([]byte, byteCount+byteRemain)
 		}
-		n, err := s.inputFile.Read(buffer)
+		n, err := fileBuf.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -278,29 +279,36 @@ func main() {
 		panic("You must specify only one option")
 	}
 
-	if fileCount > 0 && flag.Arg(0) == "" {
-		panic("You must specify file")
+	var reader io.Reader
+	outputPrefix := "x"
+	if flag.Arg(0) == "" || flag.Arg(0) == "-" {
+		if fileCount > 0 {
+			panic("You must specify file")
+		}
+		reader = os.Stdin
+	} else {
+
+		inputFilePath := flag.Arg(0)
+		outputPrefix = flag.Arg(1)
+
+		inputFile, err := os.Open(inputFilePath)
+		defer inputFile.Close()
+		if err != nil {
+			panic(err)
+		}
+		reader = inputFile
 	}
 
-	inputFilePath := flag.Arg(0)
-	outputPrefix := flag.Arg(1)
-
-	inputFile, err := os.Open(inputFilePath)
-	defer inputFile.Close()
-	if err != nil {
-		panic(err)
-	}
-
-	splitter := NewSplitter(ByLines, 1000, inputFile, outputPrefix)
+	splitter := NewSplitter(ByLines, 1000, reader, outputPrefix)
 
 	if byteCount > 0 {
-		splitter = NewSplitter(ByBytes, byteCount, inputFile, outputPrefix)
+		splitter = NewSplitter(ByBytes, byteCount, reader, outputPrefix)
 
 	} else if lineCount > 0 {
-		splitter = NewSplitter(ByLines, lineCount, inputFile, outputPrefix)
+		splitter = NewSplitter(ByLines, lineCount, reader, outputPrefix)
 
 	} else if fileCount > 0 {
-		splitter = NewSplitter(ByFiles, fileCount, inputFile, outputPrefix)
+		splitter = NewSplitter(ByFiles, fileCount, reader, outputPrefix)
 	}
 
 	err = splitter.Split()
