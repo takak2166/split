@@ -13,11 +13,23 @@ import (
 	"strconv"
 )
 
+type ErrorMsg string
+
+const (
+	InvalidByteSizeFormat       ErrorMsg = "Invalid byte size format"
+	YouMustSpecifyOnlyOneOption ErrorMsg = "You must specify only one option"
+	CannotDetermineFileSize     ErrorMsg = "Cannot determine file size"
+	OverflowHasOccured          ErrorMsg = "Overflow has occured"
+	InvalidSplitSize            ErrorMsg = "Invalid split size"
+	InvalidIndex                ErrorMsg = "invalid index"
+	DefaultCount                uint64   = 1000
+)
+
 func parseByteSize(input string) (uint64, error) {
 	re := regexp.MustCompile(`^(\d+)([KMGTPkm]i?B?)?$`)
 	matches := re.FindStringSubmatch(input)
 	if len(matches) != 3 {
-		return 0, fmt.Errorf("Invalid byte size format: %s", input)
+		return 0, fmt.Errorf("%s: %s", InvalidByteSizeFormat, input)
 	}
 
 	size, err := strconv.ParseUint(matches[1], 10, 64)
@@ -50,13 +62,13 @@ func parseByteSize(input string) (uint64, error) {
 	case "P", "PiB":
 		unitVal *= 1024 * 1024 * 1024 * 1024 * 1024
 	case "Ki", "Mi", "Gi", "Ti", "Pi", "ki", "mi":
-		return 0, fmt.Errorf("Invalid byte size format %s", input)
+		return 0, fmt.Errorf("%s: %s", InvalidByteSizeFormat, input)
 	}
 
 	result := size * unitVal
 
 	if result/unitVal != size {
-		return 0, fmt.Errorf("Parse is failed because of overflow")
+		return 0, fmt.Errorf("%s", OverflowHasOccured)
 	}
 
 	return result, nil
@@ -96,7 +108,7 @@ func (s *Splitter) Split() error {
 		return s.splitByFile()
 	}
 
-	return fmt.Errorf("invalid split type")
+	return fmt.Errorf("%s", InvalidSplitSize)
 }
 
 func (s *Splitter) splitByByte() error {
@@ -112,13 +124,12 @@ func (s *Splitter) splitByByte() error {
 		}
 
 		outputFile, err := s.createOutputFile(i)
-		defer outputFile.Close()
 		if err != nil {
 			return err
 		}
+		defer outputFile.Close()
 
-		_, err = outputFile.Write(buffer[:n])
-		if err != nil {
+		if _, err := outputFile.Write(buffer[:n]); err != nil {
 			return err
 		}
 	}
@@ -129,25 +140,24 @@ func (s *Splitter) splitByLine() error {
 	fileIndex := uint64(0)
 	lineCount := uint64(0)
 	outputFile, err := s.createOutputFile(uint64(fileIndex))
-	defer outputFile.Close()
 	if err != nil {
 		return err
 	}
+	defer outputFile.Close()
 
 	buffer := bufio.NewReader(s.reader)
 	for i := 0; ; i++ {
 		line, err := buffer.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
-				_, err = outputFile.Write(line)
+				outputFile.Write(line)
 				break
 			} else {
 				return err
 			}
 		}
 
-		_, err = outputFile.Write(line)
-		if err != nil {
+		if _, err := outputFile.Write(line); err != nil {
 			return err
 		}
 		lineCount++
@@ -156,7 +166,6 @@ func (s *Splitter) splitByLine() error {
 			outputFile.Close()
 			fileIndex++
 			outputFile, err = s.createOutputFile(fileIndex)
-			defer outputFile.Close()
 			if err != nil {
 				return err
 			}
@@ -188,13 +197,12 @@ func (s *Splitter) splitByFile() error {
 		}
 
 		outputFile, err := s.createOutputFile(i)
-		defer outputFile.Close()
 		if err != nil {
 			return err
 		}
+		defer outputFile.Close()
 
-		_, err = outputFile.Write(buffer[:n])
-		if err != nil {
+		if _, err := outputFile.Write(buffer[:n]); err != nil {
 			return err
 		}
 	}
@@ -202,13 +210,13 @@ func (s *Splitter) splitByFile() error {
 	return nil
 }
 
-func (s *Splitter) createOutputFile(index uint64) (outputFile *os.File, err error) {
+func (s *Splitter) createOutputFile(index uint64) (*os.File, error) {
 	outputFileName, err := genFileName(s.outputPrefix, index, s.count, s.splitType)
 	if err != nil {
 		return nil, err
 	}
 
-	outputFile, err = os.Create(outputFileName)
+	outputFile, err := os.Create(outputFileName)
 	if err != nil {
 		return outputFile, err
 	}
@@ -218,7 +226,7 @@ func (s *Splitter) createOutputFile(index uint64) (outputFile *os.File, err erro
 // 生成されるファイル名の命名規則
 func genFileName(prefix string, index uint64, fileCount uint64, splitType SplitType) (string, error) {
 	if splitType == ByFiles && index+1 > fileCount {
-		return "", fmt.Errorf("invalid index")
+		return "", fmt.Errorf("%s", InvalidIndex)
 	}
 	if prefix == "" {
 		prefix = "x"
@@ -253,53 +261,62 @@ func genFileName(prefix string, index uint64, fileCount uint64, splitType SplitT
 	return prefix + tmp, nil
 }
 
-func main() {
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options...] <file> [prefix]\n", os.Args[0])
-		flag.PrintDefaults()
+type CLI struct {
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+func (cli *CLI) Run(args []string) error {
+	splitFlag := flag.NewFlagSet(args[0], flag.ExitOnError)
+	splitFlag.Usage = func() {
+		fmt.Fprintf(cli.Stderr, "Usage: %s [options...] <file> [prefix]\n", args[0])
+		splitFlag.PrintDefaults()
 	}
 	// コマンドライン引数
-	byteCountStr := flag.String("b", "0", "Bytes per output file")
-	lineCountP := flag.Uint64("l", 0, "Number of lines per output file")
-	fileCountP := flag.Uint64("n", 0, "Number of output files")
+	byteCountStr := splitFlag.String("b", "0", "Bytes per output file")
+	lineCountP := splitFlag.Uint64("l", 0, "Number of lines per output file")
+	fileCountP := splitFlag.Uint64("n", 0, "Number of output files")
 
-	flag.Parse()
+	splitFlag.Parse(args[1:])
 
 	byteCount, err := parseByteSize(*byteCountStr)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	lineCount := *lineCountP
 	fileCount := *fileCountP
 
 	// 複数の分割方法は指定不可
 	if byteCount > 0 && (lineCount > 0 || fileCount > 0) {
-		panic("You must specify only one option")
+		return fmt.Errorf("%s", YouMustSpecifyOnlyOneOption)
 	} else if lineCount > 0 && fileCount > 0 {
-		panic("You must specify only one option")
+		return fmt.Errorf("%s", YouMustSpecifyOnlyOneOption)
 	}
 
 	var reader io.Reader
 	outputPrefix := "x"
-	if flag.Arg(0) == "" || flag.Arg(0) == "-" {
-		if fileCount > 0 {
-			panic("You must specify file")
-		}
-		reader = os.Stdin
-	} else {
 
-		inputFilePath := flag.Arg(0)
-		outputPrefix = flag.Arg(1)
+	// ファイルの指定がない場合やFILEが"-"の場合、 標準入力から読み込みを行う
+	if splitFlag.Arg(0) == "" || splitFlag.Arg(0) == "-" {
+		if fileCount > 0 {
+			return fmt.Errorf("%s", CannotDetermineFileSize)
+		}
+		reader = cli.Stdin
+	} else {
+		inputFilePath := splitFlag.Arg(0)
+		outputPrefix = splitFlag.Arg(1)
 
 		inputFile, err := os.Open(inputFilePath)
-		defer inputFile.Close()
 		if err != nil {
-			panic(err)
+			return err
 		}
+		defer inputFile.Close()
+
 		reader = inputFile
 	}
 
-	splitter := NewSplitter(ByLines, 1000, reader, outputPrefix)
+	splitter := NewSplitter(ByLines, DefaultCount, reader, outputPrefix)
 
 	if byteCount > 0 {
 		splitter = NewSplitter(ByBytes, byteCount, reader, outputPrefix)
@@ -311,8 +328,21 @@ func main() {
 		splitter = NewSplitter(ByFiles, fileCount, reader, outputPrefix)
 	}
 
-	err = splitter.Split()
-	if err != nil {
+	if err = splitter.Split(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func main() {
+	cli := &CLI{
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		Stdin:  os.Stdin,
+	}
+
+	if err := cli.Run(os.Args); err != nil {
 		panic(err)
 	}
 }
@@ -325,8 +355,7 @@ func getFileHash(filePath string) (string, error) {
 	defer file.Close()
 
 	hash := md5.New()
-	_, err = io.Copy(hash, file)
-	if err != nil {
+	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}
 
