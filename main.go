@@ -114,22 +114,27 @@ func (s *Splitter) Split() error {
 func (s *Splitter) splitByByte() error {
 	buffer := make([]byte, s.count)
 	for i := uint64(0); ; i++ {
-		n, err := s.reader.Read(buffer)
+		err := func() error { // loop内でdeferを使いたいので関数スコープを作成
+			n, err := s.reader.Read(buffer)
+			if err != nil {
+				return err
+			}
+
+			outputFile, err := s.createOutputFile(i)
+			if err != nil {
+				return err
+			}
+			defer outputFile.Close()
+
+			if _, err := outputFile.Write(buffer[:n]); err != nil {
+				return err
+			}
+			return nil
+		}()
 		if err != nil {
 			if err == io.EOF {
 				break
-			} else {
-				return err
 			}
-		}
-
-		outputFile, err := s.createOutputFile(i)
-		if err != nil {
-			return err
-		}
-		defer outputFile.Close()
-
-		if _, err := outputFile.Write(buffer[:n]); err != nil {
 			return err
 		}
 	}
@@ -152,9 +157,8 @@ func (s *Splitter) splitByLine() error {
 			if err == io.EOF {
 				outputFile.Write(line)
 				break
-			} else {
-				return err
 			}
+			return err
 		}
 
 		if _, err := outputFile.Write(line); err != nil {
@@ -184,25 +188,30 @@ func (s *Splitter) splitByFile() error {
 	byteRemain := uint64(fileSize) % s.count
 	buffer := make([]byte, byteCount)
 	for i := uint64(0); i < s.count; i++ {
-		if i == s.count-1 {
-			buffer = make([]byte, byteCount+byteRemain)
-		}
-		n, err := fileBuf.Read(buffer)
+		err := func() error { // loop内でdeferを使いたいので関数スコープを作成
+			if i == s.count-1 {
+				buffer = make([]byte, byteCount+byteRemain)
+			}
+			n, err := fileBuf.Read(buffer)
+			if err != nil {
+				return err
+			}
+
+			outputFile, err := s.createOutputFile(i)
+			if err != nil {
+				return err
+			}
+			defer outputFile.Close()
+
+			if _, err := outputFile.Write(buffer[:n]); err != nil {
+				return err
+			}
+			return nil
+		}()
 		if err != nil {
 			if err == io.EOF {
 				break
-			} else {
-				return err
 			}
-		}
-
-		outputFile, err := s.createOutputFile(i)
-		if err != nil {
-			return err
-		}
-		defer outputFile.Close()
-
-		if _, err := outputFile.Write(buffer[:n]); err != nil {
 			return err
 		}
 	}
@@ -288,9 +297,7 @@ func (cli *CLI) Run(args []string) error {
 	fileCount := *fileCountP
 
 	// 複数の分割方法は指定不可
-	if byteCount > 0 && (lineCount > 0 || fileCount > 0) {
-		return fmt.Errorf("%s", YouMustSpecifyOnlyOneOption)
-	} else if lineCount > 0 && fileCount > 0 {
+	if (byteCount > 0 && lineCount > 0) || (byteCount > 0 && fileCount > 0) || (lineCount > 0 && fileCount > 0) {
 		return fmt.Errorf("%s", YouMustSpecifyOnlyOneOption)
 	}
 
