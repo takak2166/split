@@ -6,11 +6,12 @@ on:
       - "feature/**"
  
 jobs:
-  build:
+  static-analysis:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Go 1.21
         uses: actions/setup-go@v3
@@ -28,4 +29,10 @@ jobs:
 
       - name: Run staticcheck
         run: staticcheck ./...
+
+      - name: Install tennvet
+        run: go install github.com/tenntenn/tennvet@latest
+
+      - name: Run tennvet by go vet
+        run: go vet -vettool=`which tennvet` ./...
 
