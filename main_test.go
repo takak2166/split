@@ -156,9 +156,11 @@ func TestSplitterSplit(t *testing.T) {
 			for _, expectedOutputName := range test.expectedOutputNames {
 				expectedOutputFilePath := outputTestFileDir + expectedOutputName
 				outputFilePath := wd + expectedOutputName
-				defer os.Remove(outputFilePath)
+				ok, err := func() (bool, error) {
+					defer os.Remove(outputFilePath)
+					return compareFileHashes(expectedOutputFilePath, outputFilePath)
+				}()
 
-				ok, err := compareFileHashes(expectedOutputFilePath, outputFilePath)
 				if err != nil {
 					t.Errorf("Unexpected error: %s", err)
 					return
